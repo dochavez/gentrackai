@@ -1,0 +1,110 @@
+name: Deploy Laravel to VPS
+
+on:
+  push:
+    branches: [ master ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      # 1️⃣ Checkout Code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2️⃣ Setup PHP
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: 8.3
+          extensions: mbstring, xml, ctype, iconv, intl, pdo_mysql
+
+      # 3️⃣ Install Backend Dependencies
+      - name: Install Composer dependencies
+        run: |
+          composer install --no-dev --prefer-dist --optimize-autoloader
+
+      - name: Create frontend env file
+        run: |
+          cat <<'EOF' > .env.production
+          ${{ secrets.VITE_ENV_FILE }}
+          EOF
+
+
+      # 4️⃣ Build Frontend Assets
+      - name: Setup Node & Build
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: |
+          npm install --legacy-peer-deps
+          npm run build
+
+      # 5️⃣ Prepare Files for Transfer
+      - name: Archive application
+        run: |
+          tar --exclude='./storage' \
+              --exclude='./.git' \
+              --exclude='./node_modules' \
+              --exclude='./tests' \
+              -czf /tmp/release.tar.gz .
+
+          # 2. Move it back to the workspace
+          mv /tmp/release.tar.gz .
+
+      # 6️⃣ Upload to Server
+      - name: Upload artifact via SCP
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          source: "release.tar.gz"
+          target: "/var/www/<APP_DIR>"
+
+      # 7️⃣ Deploy on Server
+      - name: Execute Remote SSH Commands
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          script: |
+            set -e
+
+            APP_DIR="/var/www/<APP_DIR>"
+            RELEASE_ID=$(date +%Y%m%d%H%M%S)
+            RELEASE_PATH="$APP_DIR/releases/$RELEASE_ID"
+
+            # 1. Create new release directory
+            mkdir -p $RELEASE_PATH
+
+            tar -xzf "$APP_DIR/release.tar.gz" -C "$RELEASE_PATH"
+            rm -f "$APP_DIR/release.tar.gz"
+
+            ln -sfn "$APP_DIR/shared/.env" "$RELEASE_PATH/.env"
+            ln -sfn "$APP_DIR/shared/storage" "$RELEASE_PATH/storage"
+
+            chmod -R 775 "$RELEASE_PATH/bootstrap/cache" || true
+
+            cd "$RELEASE_PATH"
+            php artisan migrate --force
+            php artisan db:seed --force --class=PermissionSeeder
+            php artisan storage:link
+            php artisan optimize
+
+            ln -sfn "$RELEASE_PATH" "$APP_DIR/current"
+
+            sudo -n /usr/bin/systemctl reload php8.3-fpm || {
+              echo "Failed to reload php8.3-fpm. Check sudoers permissions."
+              exit 1
+            }
+
+            cd "$APP_DIR/releases"
+            ls -t | tail -n +6 | xargs -r rm -rf
+
+            echo "🚀 Deployment $RELEASE_ID success!"

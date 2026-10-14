@@ -1,0 +1,31 @@
+# Secrets & credentials
+.env
+.env.*
+!.env.example
+*.p8
+*.p12
+*.pem
+*.key
+*.jks
+*.keystore
+*.mobileprovision
+google-services.json
+GoogleService-Info.plist
+
+# Archives and local-only folders
+*.zip
+.idea/
+Claude outputs/
+
+# Dependencies & builds
+node_modules/
+vendor/
+.expo/
+dist/
+web-build/
+ios/
+android/
+
+# OS
+.DS_Store
+Thumbs.db
